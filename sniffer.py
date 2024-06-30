@@ -37,46 +37,33 @@ def main():
                     display_dns(print_status, dns_header)
                 else:
                     if len(tcp_header[10]) > 0 and print_status:
-                        if tcp_header[0] == 80 or tcp_header[1] == 80:  # HTTP
-                            print('\t\t -' + 'HTTP Data:')
-                            try:
-                                http_payload = parse_http_payload(tcp_header[10])
-                                http_info = str(http_payload[10]).split('\n')
-                                for line in http_info:
-                                    print('\t\t\t' + str(line))
-                            except:
-                                print(format_multiline_output('\t\t\t', tcp_header[10]))
-                        else:
-                            print('\t\t -' + 'TCP Data:')
-                            print(format_multiline_output('\t\t\t', tcp_header[10]))
-            elif ipv4_header[3] == 1:  # ICMP
-                icmp_header = parse_icmp_header(ipv4_header[6])
-                display_icmp(print_status, icmp_header)
+                        print('\t\t -' + 'TCP Data:')
+                        print(format_multiline_output('\t\t\t', tcp_header[10]))
 
             elif ipv4_header[3] == 17:  # UDP
                 udp_header = parse_udp_header(ipv4_header[6])
                 display_udp(print_status, udp_header)
 
                 if udp_header[0] == 68 or udp_header[1] == 67:  # DHCP
-                    dhcp_packet = DHCP(udp_header[4], udp_header[2] - 8)
+                    dhcp_packet = DHCPHandler(udp_header[4], udp_header[2] - 8)
                     dhcp_packet.parse_options()
                     dhcp_packet.parse_payload()
                     if dhcp_packet.option_53 == 'DHCPDISCOVER' and dhcp_state == 'DHCPDISCOVER':
                         print('Received Discover, sending offer...')
-                        dhcp_offer_payload = DHCPPayload(2, 1, 6, 0, dhcp_packet.transaction_id, 0x0000, 0x0000,
+                        dhcp_offer_payload = DHCPFrame(2, 1, 6, 0, dhcp_packet.transaction_id, 0x0000, 0x0000,
                                                          '0.0.0.0', assigned_ip, '0.0.0.0', '0.0.0.0', dhcp_packet.chaddr, '00000000000000000000',
                                                          '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
                                                          '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
-                                                         DHCP_Protocol.magic_cookie, Options.OFFER)
+                                                         DHCPProtocol.magic_cookie, DHCPOptions.OFFER)
                         s2.sendto(dhcp_offer_payload.get_bytes(), ('255.255.255.255', 68))
                         dhcp_state = 'DHCPREQUEST'
                     elif dhcp_packet.option_53 == 'DHCPREQUEST' and dhcp_state == 'DHCPREQUEST':
                         print('Received Request, sending ack...')
-                        dhcp_ack_payload = DHCPPayload(2, 1, 6, 0, dhcp_packet.transaction_id, 0x0000, 0x0000,
+                        dhcp_ack_payload = DHCPFrame(2, 1, 6, 0, dhcp_packet.transaction_id, 0x0000, 0x0000,
                                                        '0.0.0.0', assigned_ip, '0.0.0.0', '0.0.0.0', dhcp_packet.chaddr, '00000000000000000000',
                                                        '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
                                                        '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
-                                                       DHCP_Protocol.magic_cookie, Options.ACK)
+                                                       DHCPProtocol.magic_cookie, DHCPOptions.ACK)
                         s2.sendto(dhcp_ack_payload.get_bytes(), ('255.255.255.255', 68))
 
                 elif (udp_header[0] == 53 or udp_header[1] == 53) and print_status:  # DNS
@@ -86,18 +73,6 @@ def main():
         elif eth_header[2] == '0x806':  # ARP
             arp_header = parse_arp_header(eth_header[3])
             display_arp(print_status, arp_header)
-
-        elif eth_header[2] == '0x86dd' and print_status:  # IPv6
-            ipv6_header = parse_ipv6_header(eth_header[3])
-            print('\t - ' + 'IPv6 Packet:')
-            print('\t\t - ' + 'Version: {}, Payload Length: {}, Next Header: {},'.format(ipv6_header[0], ipv6_header[1], ipv6_header[2]))
-            print('\t\t - ' + 'Hop Limit: {}, Source: {}, Target: {}'.format(ipv6_header[3], ipv6_header[4], ipv6_header[5]))
-            print('\t\t - ' + 'Traffic class: {}, Flow Label: {}'.format(ipv6_header[6], ipv6_header[7]))
-
-            if ipv6_header[2] == 58 and print_status:  # ICMPv6
-                icmpv6_header = parse_icmpv6_header(ipv6_header[8])
-                print('\t - ' + 'ICMPv6 Packet:')
-                print('\t\t -' + 'Type: {}, Code: {}, Checksum:{},'.format(icmpv6_header[0], icmpv6_header[1], icmpv6_header[2]))	
 
 def parse_ethernet_header(raw_data):
     """
@@ -151,13 +126,6 @@ def format_mac_addr(bytes_addr):
     bytes_str = map('{:02x}'.format, bytes_addr)
     return ':'.join(bytes_str).upper()
 
-def parse_icmp_header(data):
-    """
-    Analisa o cabeçalho ICMP.
-    """
-    icmp_type, code, checksum = struct.unpack('! B B H', data[:4])
-    return icmp_type, code, hex(checksum), data[16:]
-
 def parse_udp_header(raw_data):
     """
     Analisa o cabeçalho UDP.
@@ -191,28 +159,6 @@ def format_multiline_output(prefix, string, size=80):
             size -= 1
     return '\n'.join([prefix + line for line in textwrap.wrap(string, size)])
 
-def parse_ipv6_header(data):
-    """
-    Analisa o cabeçalho IPv6.
-    """
-    ipv6_first_word, ipv6_payload_len, ipv6_next_hdr, ipv6_hoplimit = struct.unpack(">IHBB", data[0:8])
-    ipv6_src_ip = socket.inet_ntop(socket.AF_INET6, data[8:24])
-    ipv6_dst_ip = socket.inet_ntop(socket.AF_INET6, data[24:40])
-
-    version = ipv6_first_word >> 28
-    traffic_class = (ipv6_first_word >> 20) & 0xFF
-    flow_label = ipv6_first_word & 0xFFFFF
-
-    data = data[40:]
-    return version, ipv6_payload_len, ipv6_next_hdr, ipv6_hoplimit, ipv6_src_ip, ipv6_dst_ip, traffic_class, hex(flow_label), data
-
-def parse_icmpv6_header(data):
-    """
-    Analisa o cabeçalho ICMPv6.
-    """
-    icmpv6_type, icmpv6_code, icmpv6_checksum = struct.unpack(">BBH", data[:4])
-    data = data[4:]
-    return icmpv6_type, icmpv6_code, hex(icmpv6_checksum), data
 
 def total_packets_count(counters):
     """
@@ -267,16 +213,6 @@ def display_dns(should_display, dns):
     """
     if should_display:
         print('ID: {} Flags: {} QDCOUNT: {} ANCOUNT: {} NSCOUNT: {} ARCOUNT: {}'.format(dns[0], dns[1], dns[2], dns[3], dns[4], dns[5]))
-
-def display_icmp(should_display, icmp):
-    """
-    Exibe informações do cabeçalho ICMP.
-    """
-    if should_display:
-        print('\t - ' + 'ICMP Packet:')
-        print('\t\t -' + 'Type: {}, Code: {}, Checksum:{},'.format(icmp[0], icmp[1], icmp[2]))
-        print('\t\t -' + ' ICMP Data:')
-        print(format_multiline_output('\t\t\t', icmp[3]))
 
 def display_udp(should_display, udp):
     """
