@@ -10,8 +10,8 @@ import pickle
 
 def main():
     s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(3))
-    s2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s2.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    # s2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # s2.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     dhcp_state = 'DHCPDISCOVER'
 
     print_status = False
@@ -30,15 +30,9 @@ def main():
 
             if ipv4_header[3] == 6:  # TCP
                 tcp_header = parse_tcp_header(ipv4_header[6])
-                display_tcp(print_status, tcp_header)
-
-                if tcp_header[0] == 53 or tcp_header[1] == 53:
+                if tcp_header[0] == 53 or tcp_header[1] == 53: # DNS
                     dns_header = parse_dns_header(tcp_header[10])
                     display_dns(print_status, dns_header)
-                else:
-                    if len(tcp_header[10]) > 0 and print_status:
-                        print('\t\t -' + 'TCP Data:')
-                        print(format_multiline_output('\t\t\t', tcp_header[10]))
 
             elif ipv4_header[3] == 17:  # UDP
                 udp_header = parse_udp_header(ipv4_header[6])
@@ -55,7 +49,8 @@ def main():
                                                          '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
                                                          '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
                                                          DHCPProtocol.magic_cookie, DHCPOptions.OFFER)
-                        s2.sendto(dhcp_offer_payload.get_bytes(), ('255.255.255.255', 68))
+                        send_dhcp_msg(s, dhcp_offer_payload)
+                        # s2.sendto(dhcp_offer_payload.get_bytes(), ('255.255.255.255', 68))
                         dhcp_state = 'DHCPREQUEST'
                     elif dhcp_packet.option_53 == 'DHCPREQUEST' and dhcp_state == 'DHCPREQUEST':
                         print('Received Request, sending ack...')
@@ -64,7 +59,8 @@ def main():
                                                        '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
                                                        '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
                                                        DHCPProtocol.magic_cookie, DHCPOptions.ACK)
-                        s2.sendto(dhcp_ack_payload.get_bytes(), ('255.255.255.255', 68))
+                        send_dhcp_msg(s, dhcp_ack_payload)
+                        # s2.sendto(dhcp_ack_payload.get_bytes(), ('255.255.255.255', 68))
 
                 elif (udp_header[0] == 53 or udp_header[1] == 53) and print_status:  # DNS
                     dns_header = parse_dns_header(udp_header[4])
@@ -195,18 +191,6 @@ def display_ipv4(should_display, ipv4):
         print('\t\t - ' + 'Version: {}, Header Length: {}, TTL: {},'.format(ipv4[0], ipv4[1], ipv4[2]))
         print('\t\t - ' + 'Protocol: {}, Source: {}, Target: {}'.format(ipv4[3], ipv4[4], ipv4[5]))
 
-def display_tcp(should_display, tcp):
-    """
-    Exibe informações do cabeçalho TCP.
-    """
-    if should_display:
-        print('\t - ' + 'TCP Segment:')
-        print('\t\t - ' + 'Source Port: {}, Destination Port: {}'.format(tcp[0], tcp[1]))
-        print('\t\t - ' + 'Sequence: {}, Acknowledgment: {}'.format(tcp[2], tcp[3]))
-        print('\t\t - ' + 'Flags:')
-        print('\t\t\t - ' + 'URG: {}, ACK: {}, PSH:{}'.format(tcp[4], tcp[5], tcp[6]))
-        print('\t\t\t - ' + 'RST: {}, SYN: {}, FIN:{}'.format(tcp[7], tcp[8], tcp[9]))
-
 def display_dns(should_display, dns):
     """
     Exibe informações do cabeçalho DNS.
@@ -232,5 +216,40 @@ def display_arp(should_display, arp):
         print('\t\t - ' + 'Hardware Size: {}, Protocol Size: {}, Opcode: {}'.format(arp[2], arp[3], arp[4]))
         print('\t\t - ' + 'Source MAC: {}, Source Ip: {}'.format(format_mac_addr(arp[5]), format_ip(arp[6])))
         print('\t\t - ' + 'Dest MAC: {}, Dest Ip: {}'.format(format_mac_addr(arp[7]), format_ip(arp[8])))
+
+def send_dhcp_msg(raw_socket, dhcp_frame):
+    # Ethernet frame
+    eth_dst = binascii.unhexlify('ffffffffffff')  # Broadcast
+    eth_src = binascii.unhexlify('001122334455')  # Replace with MAC address
+    eth_type = struct.pack('!H', 0x0800)  # IPv4
+
+    # IP header
+    ip_ihl_ver = struct.pack('!B', 0x45)
+    ip_tos = struct.pack('!B', 0x00)
+    ip_tot_len = struct.pack('!H', 0x0138)
+    ip_id = struct.pack('!H', 0x0000)
+    ip_frag_off = struct.pack('!H', 0x0000)
+    ip_ttl = struct.pack('!B', 0x80)
+    ip_proto = struct.pack('!B', 0x11)  # UDP
+    ip_checksum = struct.pack('!H', 0x0000)
+    ip_src = socket.inet_aton('0.0.0.0')
+    ip_dst = socket.inet_aton('255.255.255.255')
+
+    ip_header = ip_ihl_ver + ip_tos + ip_tot_len + ip_id + ip_frag_off + ip_ttl + ip_proto + ip_checksum + ip_src + ip_dst
+
+    # UDP header
+    udp_src = struct.pack('!H', 68)  # Source port
+    udp_dst = struct.pack('!H', 67)  # Destination port
+    udp_len = struct.pack('!H', 0x0124)
+    udp_checksum = struct.pack('!H', 0x0000)
+
+    udp_header = udp_src + udp_dst + udp_len + udp_checksum
+    dhcp_packet = dhcp_frame.to_bytes()
+    
+    packet = eth_dst + eth_src + eth_type + ip_header + udp_header + dhcp_packet
+  
+    raw_socket.send(packet)
+
+
 
 main()
