@@ -1,5 +1,4 @@
-from itertools import count
-import opcode
+import binascii
 import socket
 import struct
 from struct import *
@@ -9,169 +8,148 @@ from dhcp import *
 from payloads import *
 import pickle
 
-
 def main():
     s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(3))
-    #s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    s2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s2.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    step = 'DHCPDISCOVER'
+    s.bind(("enp4s0", 0))
+    # s2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # s2.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    dhcp_state = 'DHCPDISCOVER'
 
-    should_print = False
+    print_status = False
+    assigned_ip = '10.32.143.136'
+    print("Waiting for DHCP discover from client...")
 
-    ip_assigned = '172.26.144.1'
-    #s2.bind(('0.0.0.0', 68))
-    print("Waiting for dhcp discover from client...")
     while True:
-        raw_data, addr = s.recvfrom(65535)
-        eth = ethernet_head(raw_data)
-        #Ipv4 Protocol(Internet Layer)
-        if eth[2] == '0x800':
-            ipv4 = ipv4_head(eth[3])
-            should_print = should_print_packages(ip_assigned, ipv4[4])
-            print_ethernet(should_print, eth)
-            print_ipv4(should_print, ipv4)
-            
-            #TCP
-            if ipv4[3] == 6:
-                tcp = tcp_head(ipv4[6])
-                print_tcp(should_print, tcp)
+        raw_pkt, addr = s.recvfrom(65535)
+        eth_header = parse_ethernet_header(raw_pkt)
 
-                if tcp[0] == 53 or tcp[1] == 53:
-                    dns = dns_head(tcp[10])
-                    print_dns(should_print, dns)
-                else:
-                    if len(tcp[10]) > 0 and should_print:
-                        # HTTP
-                        if tcp[0] == 80 or tcp[1] == 80:
-                            print('\t\t -' + 'HTTP Data:')
-                            try:
-                                http = http(tcp[10])
-                                http_info = str(http[10]).split('\n')
-                                for line in http_info:
-                                    print('\t\t\t' + str(line))
-                            except:
-                                print(format_multi_line('\t\t\t', tcp[10]))
-                        else:
-                            print('\t\t -' + 'TCP Data:')
-                            print(format_multi_line('\t\t\t', tcp[10]))
-            #ICMP
-            elif ipv4[3] == 1:
-                icmp = icmp_head(ipv4[6])
-                print_icmp(should_print, icmp)
+        if eth_header[2] == '0x800':  # IPv4
+            ipv4_header = parse_ipv4_header(eth_header[3])
+            print_status = should_display_packets(assigned_ip, ipv4_header[4])
+            display_ethernet(print_status, eth_header)
+            display_ipv4(print_status, ipv4_header)
 
-            #HERE
-            #UDP            
-            if ipv4[3] == 17:
-                udp = udp_head(ipv4[6])
-                print_udp(should_print,udp)
-                #DNS
-                #Client source 68 destination 67
-                #SRV source 67 destination 68
-                if udp[0] == 68 or udp[1] == 67:
-                    dhcp_package = DHCP(udp[4], udp[2] - 8)
-                    dhcp_package.parse_options()
-                    dhcp_package.parse_payload()
-                    if dhcp_package._option_53 == 'DHCPDISCOVER' and step == 'DHCPDISCOVER':
+            if ipv4_header[3] == 6:  # TCP
+                tcp_header = parse_tcp_header(ipv4_header[6])
+                if tcp_header[0] == 53 or tcp_header[1] == 53: # DNS
+                    print("dns")
+                    # dns_header = parse_dns_header(tcp_header[10])
+                    # display_dns(print_status, dns_header)
+
+            elif ipv4_header[3] == 17:  # UDP
+                udp_header = parse_udp_header(ipv4_header[6])
+                display_udp(print_status, udp_header)
+
+                if udp_header[0] == 68 or udp_header[1] == 67:  # DHCP
+                    dhcp_packet = DHCPHandler(udp_header[4], udp_header[2] - 8)
+                    dhcp_packet.extract_options()
+                    dhcp_packet.extract_data()
+                    if dhcp_packet.msg_type_opt == 'DHCPDISCOVER' and dhcp_state == 'DHCPDISCOVER':
                         print('Received Discover, sending offer...')
-                        payload = DHCPPayload(2,1,6,0, dhcp_package._transaction_id, 0x0000, 0x0000,
-                            '0.0.0.0', ip_assigned, '0.0.0.0', '0.0.0.0', dhcp_package._chaddr, '00000000000000000000',
-                            '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
-                            '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
-                            DHCP_Protocol.magic_cookie, Options.OFFER)
-                        s2.sendto(payload.get_bytes(), ('255.255.255.255', 68))
-                        step = 'DHCPREQUEST'
-                    elif dhcp_package._option_53 == 'DHCPREQUEST' and step == 'DHCPREQUEST':
+                        dhcp_offer_payload = DHCPFrame(2, 1, 6, 0, dhcp_packet.trans_id, 0x0000, 0x0000,
+                                                         '0.0.0.0', assigned_ip, '0.0.0.0', '0.0.0.0', dhcp_packet.client_hw_addr, '00000000000000000000',
+                                                         '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
+                                                         '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
+                                                         DHCPProtocol.magic_cookie, DHCPOptions.OFFER)
+                        send_dhcp_msg(s, dhcp_offer_payload)
+                        # s2.sendto(dhcp_offer_payload.get_bytes(), ('255.255.255.255', 68))
+                        dhcp_state = 'DHCPREQUEST'
+                    elif dhcp_packet.msg_type_opt == 'DHCPREQUEST' and dhcp_state == 'DHCPREQUEST':
                         print('Received Request, sending ack...')
-                        payload = DHCPPayload(2,1,6,0, dhcp_package._transaction_id, 0x0000, 0x0000,
-                            '0.0.0.0', ip_assigned, '0.0.0.0', '0.0.0.0', dhcp_package._chaddr, '00000000000000000000',
-                            '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
-                            '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
-                            DHCP_Protocol.magic_cookie, Options.ACK)
-                        s2.sendto(payload.get_bytes(), ('255.255.255.255', 68))
+                        dhcp_ack_payload = DHCPFrame(2, 1, 6, 0, dhcp_packet.trans_id, 0x0000, 0x0000,
+                                                       '0.0.0.0', assigned_ip, '0.0.0.0', '0.0.0.0', dhcp_packet.client_hw_addr, '00000000000000000000',
+                                                       '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
+                                                       '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
+                                                       DHCPProtocol.magic_cookie, DHCPOptions.ACK)
+                        send_dhcp_msg(s, dhcp_ack_payload)
+                        # s2.sendto(dhcp_ack_payload.get_bytes(), ('255.255.255.255', 68))
 
-                elif (udp[0] == 53 or udp[1] == 53) and should_print:
-                    dns = dns_head(udp[4])
-                    print('ID: {} Flags: {} QDCOUNT: {} ANCOUNT: {} NSCOUNT: {} ARCOUNT: {}'.format(dns[0], dns[1], dns[2], dns[3], dns[4], dns[5]))
-                #else:
-                #   print(format_multi_line('\t\t\t', udp[4]))
+                elif (udp_header[0] == 53 or udp_header[1] == 53) and print_status:  # DNS
+                    dns_header = parse_dns_header(udp_header[4])
+                    print('ID: {} Flags: {} QDCOUNT: {} ANCOUNT: {} NSCOUNT: {} ARCOUNT: {}'.format(dns_header[0], dns_header[1], dns_header[2], dns_header[3], dns_header[4], dns_header[5]))
 
+        elif eth_header[2] == '0x806':  # ARP
+            arp_header = parse_arp_header(eth_header[3])
+            display_arp(print_status, arp_header)
 
-
-
-        # #ARP
-        elif eth[2] == '0x806':
-            arp = arp_head(eth[3])
-            print_arp(should_print, arp)
-        #IPV6 Protocol(Internet Layer)
-        if eth[2] == '0x86dd' and should_print:
-            ipv6 = ipv6Header(eth[3])
-            print( '\t - ' + 'IPv6 Packet:')
-            print('\t\t - ' + 'Version: {}, Payload Length: {}, Next Header: {},'.format(ipv6[0], ipv6[1], ipv6[2]))
-            print('\t\t - ' + 'Hop Limit: {}, Source: {}, Target: {}'.format(ipv6[3], ipv6[4], ipv6[5]))
-            print('\t\t - ' + 'Traffic class: {}, Flow Label: {}'.format(ipv6[6], ipv6[7]))
-
-            #ICMPv6 
-            if ipv6[2] == 58 and should_print:
-                icmpv6 = icmpv6Header(ipv6[8])
-                print('\t - ' + 'ICMP Packet:')
-                print('\t\t -' + 'Type: {}, Code: {}, Checksum:{},'.format(icmpv6[0], icmpv6[1], icmpv6[2]))	
-        
-def ethernet_head(raw_data):
+def parse_ethernet_header(raw_data):
+    """
+    Analisa o cabeçalho Ethernet.
+    """
     dest, src, prototype = struct.unpack('! 6s 6s H', raw_data[:14])
-    dest_mac = get_mac_addr(dest)
-    src_mac = get_mac_addr(src)
+    dest_mac = format_mac_addr(dest)
+    src_mac = format_mac_addr(src)
     proto = hex(prototype)
     data = raw_data[14:]
     return dest_mac, src_mac, proto, data
 
-def ipv4_head(raw_data):
+def parse_ipv4_header(raw_data):
+    """
+    Analisa o cabeçalho IPv4.
+    """
     version_header_length = raw_data[0]
     version = version_header_length >> 4
     header_length = (version_header_length & 15) * 4
     ttl, proto, src, target = struct.unpack('! 8x B B 2x 4s 4s', raw_data[:20])
     data = raw_data[header_length:]
-    src = get_ip(src)
-    target = get_ip(target)
+    src = format_ip(src)
+    target = format_ip(target)
     return version, header_length, ttl, proto, src, target, data
 
-def get_ip(addr):
+def format_ip(addr):
+    """
+    Converte um endereço binário para string.
+    """
     return '.'.join(map(str, addr))
 
-def tcp_head(raw_data):
-    (src_port, dest_port, sequence, acknowledgment, offset_reserved_flags) = struct.unpack('! H H L L H', raw_data[:14])
-    offset = (offset_reserved_flags >> 12) * 4
-    flag_urg = (offset_reserved_flags & 32) >> 5
-    flag_ack = (offset_reserved_flags & 16) >> 4
-    flag_psh = (offset_reserved_flags & 8) >> 3
-    flag_rst = (offset_reserved_flags & 4) >> 2
-    flag_syn = (offset_reserved_flags & 2) >> 1
-    flag_fin = offset_reserved_flags & 1
+def parse_tcp_header(raw_data):
+    """
+    Analisa o cabeçalho TCP.
+    """
+    (src_port, dest_port, seq, ack, offset_flags) = struct.unpack('! H H L L H', raw_data[:14])
+    offset = (offset_flags >> 12) * 4
+    flag_urg = (offset_flags & 32) >> 5
+    flag_ack = (offset_flags & 16) >> 4
+    flag_psh = (offset_flags & 8) >> 3
+    flag_rst = (offset_flags & 4) >> 2
+    flag_syn = (offset_flags & 2) >> 1
+    flag_fin = offset_flags & 1
     data = raw_data[offset:]
-    return src_port, dest_port, sequence, acknowledgment, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, data
-    
-def get_mac_addr(bytes_addr) :
+    return src_port, dest_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, data
+
+def format_mac_addr(bytes_addr):
+    """
+    Formata o endereço MAC.
+    """
     bytes_str = map('{:02x}'.format, bytes_addr)
     return ':'.join(bytes_str).upper()
 
-def icmp_head(data):
-    icmp_type, code, checksum = struct.unpack('! B B H', data[:4])
-    return icmp_type, code, hex(checksum), data[16:]
-
-def udp_head(raw_data):
+def parse_udp_header(raw_data):
+    """
+    Analisa o cabeçalho UDP.
+    """
     src_port, dest_port, size, checksum = struct.unpack('! H H H H', raw_data[:8])
     data = raw_data[8:]
     return src_port, dest_port, size, hex(checksum), data
 
-def dns_head(raw_data):
+def parse_dns_header(raw_data):
+    """
+    Analisa o cabeçalho DNS.
+    """
     id, flags, qdcount, ancount, nscount, arcount = struct.unpack('! H H H H H H', raw_data[:12])
     return hex(id), hex(flags), qdcount, ancount, nscount, arcount
 
-def arp_head(raw_data):
-    hardware_type, protocol_type, hardware_size, protocol_size, opcode, source_mac, source_ip, dest_mac, dest_ip = struct.unpack("! H H B B H 6s 4s 6s 4s", raw_data[:28])
-    return hardware_type, hex(protocol_type), hardware_size, protocol_size, opcode, source_mac, source_ip, dest_mac, dest_ip
+def parse_arp_header(raw_data):
+    """
+    Analisa o cabeçalho ARP.
+    """
+    hw_type, proto_type, hw_size, proto_size, opcode, src_mac, src_ip, dest_mac, dest_ip = struct.unpack("! H H B B H 6s 4s 6s 4s", raw_data[:28])
+    return hw_type, hex(proto_type), hw_size, proto_size, opcode, src_mac, src_ip, dest_mac, dest_ip
 
-def format_multi_line(prefix, string, size=80):
+def format_multiline_output(prefix, string, size=80):
+    """
+    Formata a saída de múltiplas linhas.
+    """
     size -= len(prefix)
     if isinstance(string, bytes):
         string = ''.join(r'\x{:02x}'.format(byte) for byte in string)
@@ -180,84 +158,100 @@ def format_multi_line(prefix, string, size=80):
     return '\n'.join([prefix + line for line in textwrap.wrap(string, size)])
 
 
-def ipv6Header(data):
-    ipv6_first_word, ipv6_payload_legth, ipv6_next_header, ipv6_hoplimit = struct.unpack(
-        ">IHBB", data[0:8])
-    ipv6_src_ip = socket.inet_ntop(socket.AF_INET6, data[8:24])
-    ipv6_dst_ip = socket.inet_ntop(socket.AF_INET6, data[24:40])
-
-    bin(ipv6_first_word)
-    "{0:b}".format(ipv6_first_word)
-    version = ipv6_first_word >> 28
-    traffic_class = ipv6_first_word >> 16
-    traffic_class = int(traffic_class) & 8323072
-    flow_label = int(ipv6_first_word) & 2097151
-
-    data = data[40:]
-
-    return  version, ipv6_payload_legth, ipv6_next_header, ipv6_hoplimit, ipv6_src_ip, ipv6_dst_ip, traffic_class, hex(flow_label), data
-
-
-def icmpv6Header(data):
-    ipv6_icmp_type, ipv6_icmp_code, ipv6_icmp_checksum = struct.unpack(
-        ">BBH", data[:4])
-
-    data = data[4:]
-    return ipv6_icmp_type, ipv6_icmp_code, hex(ipv6_icmp_checksum), data
-
-def get_total(counters):
+def total_packets_count(counters):
+    """
+    Retorna o total de pacotes contados.
+    """
     return counters[0] + counters[1] + counters[2]
 
-def format_to_percentage(value):
+def convert_to_percentage(value):
+    """
+    Converte um valor para porcentagem.
+    """
     return value * 100
 
-def should_print_packages(incoming_ip, client_ip):
+def should_display_packets(incoming_ip, client_ip):
+    """
+    Verifica se os pacotes devem ser exibidos com base no IP.
+    """
     return incoming_ip == client_ip
 
-def print_ethernet(should_print, eth):
-    if should_print:
+def display_ethernet(should_display, eth):
+    """
+    Exibe informações do cabeçalho Ethernet.
+    """
+    if should_display:
         print('\nEthernet Frame:')
         print('Destination: {}, Source: {}, Protocol: {}'.format(eth[0], eth[1], eth[2]))
 
-
-def print_ipv4(should_print, ipv4):
-    if should_print:
-        print( '\t - ' + 'IPv4 Packet:')
+def display_ipv4(should_display, ipv4):
+    """
+    Exibe informações do cabeçalho IPv4.
+    """
+    if should_display:
+        print('\t - ' + 'IPv4 Packet:')
         print('\t\t - ' + 'Version: {}, Header Length: {}, TTL: {},'.format(ipv4[0], ipv4[1], ipv4[2]))
-        print('\t\t - ' + 'Protocol: {}, Source: {}, Target: {}'.format(ipv4[3], ipv4[4], ipv4[5]))	
+        print('\t\t - ' + 'Protocol: {}, Source: {}, Target: {}'.format(ipv4[3], ipv4[4], ipv4[5]))
 
-def print_tcp(should_print, tcp):
-    if should_print:
-        print('\t - ' + 'TCP Segment:')
-        print('\t\t - ' + 'Source Port: {}, Destination Port: {}'.format(tcp[0], tcp[1]))
-        print('\t\t - ' + 'Sequence: {}, Acknowledgment: {}'.format(tcp[2], tcp[3]))
-        print('\t\t - ' + 'Flags:')
-        print('\t\t\t - ' + 'URG: {}, ACK: {}, PSH:{}'.format(tcp[4], tcp[5], tcp[6]))
-        print('\t\t\t - ' + 'RST: {}, SYN: {}, FIN:{}'.format(tcp[7], tcp[8], tcp[9]))
-
-def print_dns(should_print, dns):
-    if should_print:
+def display_dns(should_display, dns):
+    """
+    Exibe informações do cabeçalho DNS.
+    """
+    if should_display:
         print('ID: {} Flags: {} QDCOUNT: {} ANCOUNT: {} NSCOUNT: {} ARCOUNT: {}'.format(dns[0], dns[1], dns[2], dns[3], dns[4], dns[5]))
 
-def print_icmp(should_print, icmp):
-    if should_print:
-        print('\t - ' + 'ICMP Packet:')
-        print('\t\t -' + 'Type: {}, Code: {}, Checksum:{},'.format(icmp[0], icmp[1], icmp[2]))				
-        print('\t\t -' + ' ICMP Data:')
-        print(format_multi_line('\t\t\t', icmp[3]))
-
-def print_udp(should_print, udp):
-    if should_print:
+def display_udp(should_display, udp):
+    """
+    Exibe informações do cabeçalho UDP.
+    """
+    if should_display:
         print('\t -' + ' UDP Segment:')
-        print('\t\t -' + ' Source Port: {}, Destination Port: {}, Length: {}, CheckSum: {}'.format(
-                    udp[0], udp[1], udp[2], udp[3]))
+        print('\t\t -' + ' Source Port: {}, Destination Port: {}, Length: {}, CheckSum: {}'.format(udp[0], udp[1], udp[2], udp[3]))
 
-def print_arp(should_print, arp):
-    if should_print:
-        print( '\t - ' + 'ARP Packet:')
+def display_arp(should_display, arp):
+    """
+    Exibe informações do cabeçalho ARP.
+    """
+    if should_display:
+        print('\t - ' + 'ARP Packet:')
         print('\t\t - ' + 'Hardware type: {}, Protocol Type: {}'.format(arp[0], arp[1]))
         print('\t\t - ' + 'Hardware Size: {}, Protocol Size: {}, Opcode: {}'.format(arp[2], arp[3], arp[4]))
-        print('\t\t - ' + 'Source MAC: {}, Source Ip: {}'.format(get_mac_addr(arp[5]), get_ip(arp[6])))
-        print('\t\t - ' + 'Dest MAC: {}, Dest Ip: {}'.format(get_mac_addr(arp[7]), get_ip(arp[8])))
+        print('\t\t - ' + 'Source MAC: {}, Source Ip: {}'.format(format_mac_addr(arp[5]), format_ip(arp[6])))
+        print('\t\t - ' + 'Dest MAC: {}, Dest Ip: {}'.format(format_mac_addr(arp[7]), format_ip(arp[8])))
+
+def send_dhcp_msg(raw_socket, dhcp_frame):
+    # Ethernet frame
+    eth_dst = binascii.unhexlify('ffffffffffff')  # Broadcast
+    eth_src = binascii.unhexlify('a41f72f590b7')  # Replace with MAC address
+    eth_type = struct.pack('!H', 0x0800)  # IPv4
+
+    # IP header
+    ip_ihl_ver = struct.pack('!B', 0x45)
+    ip_tos = struct.pack('!B', 0x00)
+    ip_tot_len = struct.pack('!H', 0x0138)
+    ip_id = struct.pack('!H', 0x0000)
+    ip_frag_off = struct.pack('!H', 0x0000)
+    ip_ttl = struct.pack('!B', 0x80)
+    ip_proto = struct.pack('!B', 0x11)  # UDP
+    ip_checksum = struct.pack('!H', 0x0000)
+    ip_src = socket.inet_aton('10.32.143.124')
+    ip_dst = socket.inet_aton('10.32.143.255')
+
+    ip_header = ip_ihl_ver + ip_tos + ip_tot_len + ip_id + ip_frag_off + ip_ttl + ip_proto + ip_checksum + ip_src + ip_dst
+
+    # UDP header
+    udp_src = struct.pack('!H', 68)  # Source port
+    udp_dst = struct.pack('!H', 67)  # Destination port
+    udp_len = struct.pack('!H', 0x0124)
+    udp_checksum = struct.pack('!H', 0x0000)
+
+    udp_header = udp_src + udp_dst + udp_len + udp_checksum
+    dhcp_packet = dhcp_frame.to_bytes()
+    
+    packet = eth_dst + eth_src + eth_type + ip_header + udp_header + dhcp_packet
+  
+    raw_socket.send(packet)
+
+
 
 main()

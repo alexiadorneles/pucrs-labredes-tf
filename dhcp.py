@@ -2,130 +2,130 @@ import binascii
 import socket
 import struct
 
-class DHCP(object):
-	def __init__(self, packet, length):
-		self._payload = packet#[42:]
-		self._length = length
-		self._ciaddr = ''
-		self._chaddr = ''
-		self._option_55 = ''
-		self._option_53 = ''
-		self._option_12 = ''
-		self._option_50 = ''
-		self._option_54 = ''
-		self._transaction_id = ''
-	def parse_payload(self):
-		# parse DHCP payload [0:44]
-		#    ciaddr [Client IP Address]      : [12:16]
-		#    yiaddr [Your IP Address]        : [16:20]
-		#    siaddr [Server IP Address]      : [20:24]
-		#    giaddr [Gateway IP Address]     : [24:28]
-		#    chaddr [Client Hardware address]: [28:44]
-		tmp = struct.unpack('!4s', self._payload[12:16])
-		self._ciaddr = socket.inet_ntoa(tmp[0])
-		self._chaddr = binascii.hexlify(self._payload[28:34]).decode()
+class DHCPHandler(object):
+    def __init__(self, data_packet, data_length):
+        self._raw_data = data_packet  # Pacote de dados brutos
+        self._data_length = data_length  # Comprimento dos dados
+        self._client_ip = ''  # Endereço IP do cliente
+        self._client_hw_addr = ''  # Endereço de hardware do cliente
+        self._req_list_opt = ''  # Opção de lista de solicitações (option 55)
+        self._msg_type_opt = ''  # Tipo de mensagem DHCP (option 53)
+        self._hostname_opt = ''  # Nome do host (option 12)
+        self._req_ip_opt = ''  # IP solicitado (option 50)
+        self._server_id_opt = ''  # ID do servidor (option 54)
+        self._trans_id = ''  # ID da transação
+    
+    def extract_data(self):
+        """
+        Extrai e analisa dados do payload DHCP.
+        - client_ip: Endereço IP do cliente [12:16]
+        - client_hw_addr: Endereço de hardware do cliente [28:34]
+        """
+        tmp = struct.unpack('!4s', self._raw_data[12:16])
+        self._client_ip = socket.inet_ntoa(tmp[0])  # Converte o endereço IP do cliente de binário para string
+        self._client_hw_addr = binascii.hexlify(self._raw_data[28:34]).decode()  # Converte o endereço de hardware para hexadecimal
 
+    def extract_options(self):
+        """
+        Analisa e extrai as opções DHCP do payload.
+        - Magic Cookie + Opções DHCP + FF (fim das opções)
+        - Formato das opções DHCP: código (1 byte) + comprimento (1 byte) + valor
+        - Formato de Pad e End option: código (1 byte)
+        """
+        is_found = False
+        raw_hex_data = binascii.hexlify(self._raw_data).decode()  # Converte os dados brutos para hexadecimal
+        self._trans_id = bytes.fromhex(raw_hex_data[8:16])  # Extrai o ID da transação
+        cookie_index = raw_hex_data.find(DHCPProtocol.magic_cookie)  # Encontra o índice do Magic Cookie
+        if -1 == cookie_index:
+            return
 
-	# DHCP options format:
-	#     Magic Cookie + DHCP options + FF(end option)
-	#     DHCP option format:
-	#         code(1 byte) + length(1 byte) + value
-	#     Pad and End option format:
-	#         code(1 byte)
-	def parse_options(self):
-		find = False
-		payload = binascii.hexlify(self._payload).decode()
-		self._transaction_id = bytes.fromhex(payload[8:16])
-		index = payload.find(DHCP_Protocol.magic_cookie)
-		if -1 == index:
-			return
+        cookie_index += len(DHCPProtocol.magic_cookie)
+        total_hex_length = self._data_length * 2  # Comprimento total em hexadecimal
+        while True:
+            opt_code = int(raw_hex_data[cookie_index:cookie_index+2], 16)  # Código da opção
+            if DHCPProtocol.opt_pad == opt_code:
+                cookie_index += 2
+                continue
+            if DHCPProtocol.opt_end == opt_code:
+                return
+            opt_length = int(raw_hex_data[cookie_index+2:cookie_index+4], 16)  # Comprimento da opção
+            opt_value = raw_hex_data[cookie_index+4:cookie_index+4+opt_length*2]  # Valor da opção
 
-		index += len(DHCP_Protocol.magic_cookie)
-		hex_count = self._length * 2;
-		while True:
-			code = int(payload[index:index+2], 16)
-			if DHCP_Protocol.option_pad == code:
-				index += 2
-				continue
-			if DHCP_Protocol.option_end == code:
-				return
-			length = int(payload[index+2:index+4], 16)
-			value = payload[index+4:index+4+length*2]
+            # Define as opções DHCP
+            if DHCPProtocol.opt_req_list == opt_code:
+                self._req_list_opt = opt_value
+            elif DHCPProtocol.opt_msg_type == opt_code:
+                self._msg_type_opt = DHCPProtocol.get_message_type(int(opt_value))
+            elif DHCPProtocol.opt_hostname == opt_code:
+                self._hostname_opt = bytes.fromhex(opt_value).decode()
+            elif DHCPProtocol.opt_req_ip == opt_code:
+                ip_bytes = bytes.fromhex(opt_value)
+                self._req_ip_opt = socket.inet_ntoa(ip_bytes)
+            elif DHCPProtocol.opt_server_id == opt_code:
+                server_id_bytes = bytes.fromhex(opt_value)
+                self._server_id_opt = socket.inet_ntoa(server_id_bytes)
 
-			# set DHCP options
-			if DHCP_Protocol.option_request_list == code:
-				self._option_55 = value
-			elif DHCP_Protocol.option_message_type == code:
-				self._option_53 = DHCP_Protocol.get_message_type(int(value))
-			elif DHCP_Protocol.option_host_name == code:
-				self._option_12 = bytes.fromhex(value).decode()
-			elif DHCP_Protocol.option_request_ip == code:
-				b = bytes.fromhex(value)
-				self._option_50 = socket.inet_ntoa(b)
-			elif DHCP_Protocol.option_server_id == code:
-				b = bytes.fromhex(value)
-				self._option_54 = socket.inet_ntoa(b)
+            cookie_index = cookie_index + 4 + opt_length * 2
 
-			index = index + 4 + length * 2
+            if cookie_index + 4 > total_hex_length:
+                break
 
-			if index + 4 >  hex_count:
-				break
+    @property
+    def client_ip(self):
+        return self._client_ip
 
-	@property
-	def ciaddr(self):
-		return self._ciaddr
+    @property
+    def client_hw_addr(self):
+        return self._client_hw_addr
 
-	@property
-	def chaddr(self):
-		return self._chaddr
+    @property
+    def req_list_opt(self):
+        return self._req_list_opt
 
-	@property
-	def option_55(self):
-		return self._option_55
+    @property
+    def msg_type_opt(self):
+        return self._msg_type_opt
 
-	@property
-	def option_53(self):
-		return self._option_53
+    @property
+    def hostname_opt(self):
+        return self._hostname_opt
 
-	@property
-	def option_12(self):
-		return self._option_12
+    @property
+    def req_ip_opt(self):
+        return self._req_ip_opt
 
-	@property
-	def option_50(self):
-		return self._option_50
+    @property
+    def server_id_opt(self):
+        return self._server_id_opt
+    
+    @property
+    def trans_id(self):
+        return self._trans_id
 
-	@property
-	def option_54(self):
-		return self._option_54
-	@property
-	def transaction_id(self):
-		return self._transaction_id
+class DHCPProtocol(object):
+    server_port = 67
+    client_port = 68
 
-class DHCP_Protocol(object):
-	server_port = 67
-	client_port = 68
+    # DHCP options
+    magic_cookie = '63825363'
+    opt_pad = 0
+    opt_hostname = 12
+    opt_req_ip = 50
+    opt_msg_type = 53
+    opt_server_id = 54
+    opt_req_list = 55
+    opt_end = 255
 
-	# DHCP options
-	magic_cookie        = '63825363'
-	option_pad          = 0
-	option_host_name    = 12
-	option_request_ip   = 50
-	option_message_type = 53
-	option_server_id    = 54
-	option_request_list = 55
-	option_end          = 255
-
-	@staticmethod
-	def get_message_type(value):
-		message_type = {
-			1: 'DHCPDISCOVER',
-			2: 'DHCPOFFER',
-			3: 'DHCPREQUEST',
-			4: 'DHCPDECLINE',
-			5: 'DHCPACK',
-			6: 'DHCPNAK',
-			7: 'DHCPRELEASE',
-			8: 'DHCPINFORM'
-		}
-		return message_type.get(value, 'None')
+    @staticmethod
+    def get_message_type(value):
+        msg_type = {
+            1: 'DHCPDISCOVER',
+            2: 'DHCPOFFER',
+            3: 'DHCPREQUEST',
+            4: 'DHCPDECLINE',
+            5: 'DHCPACK',
+            6: 'DHCPNAK',
+            7: 'DHCPRELEASE',
+            8: 'DHCPINFORM'
+        }
+        return msg_type.get(value, 'None')
